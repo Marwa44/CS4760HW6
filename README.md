@@ -1,7 +1,29 @@
 # CS4760HW6
-Memory Management Simulator
+# Memory Management Simulator
 
-# Memory Management
+This program is incomplete. However, the known regions that are still needed have been included as pseudocode in comment blocks
+
+oss.c simulates a primitive operating system that spawns processes and logs memory requests at various times to a file using a simulated clock. Periodically, a Daemon is run to remove recently unused pages using the second chance algorithm
+
+## Options
+-h  Help option: displays options and their usage for oss.c.
+Usage:   ./oss -h
+
+-s  Slave option: this option sets the number of slave processes from 1-19 (default 5).
+Usage:   ./oss -s 10
+			
+-l  Logfile option: this option changes the name of the logfile to the chosen parameter (default msglog.out).
+Usage:   ./oss -l output.txt
+			
+-t  Timeout option: this option sets the maximum run time allowed by the program in seconds before terminating (default 20).
+Usage:   ./oss -t 5
+			
+-v  Verbose option: this option affects what information is saved in the log file.
+Usage:   ./oss -v
+
+# Original Project Specifications
+
+## Memory Management
 Design and implement a memory management module for our Operating System Simulator oss.
 Implement a Unix-like second-chance algorithm. When the number of free frames falls below some value (let it be
 10% of the total), a special daemon program kicks in. In oss, the logical place for this daemon to be invoked is the
@@ -13,7 +35,7 @@ over a page sitting in such a frame, there is no need to swap it in – just tur
 to keep track of a dirty bit in the frames as well, which would indicate in a real system that you need to copy that
 data out to disk.
 
-# Operating System Simulator
+## Operating System Simulator
 This will be your main program and serve as the master process. You will start the operating system simulator (call
 the executable oss) as one main process who will fork multiple children at random times. The randomness will be
 simulated by a logical clock that will be updated by oss as well as user processes. Thus, the logical clock resides
@@ -56,7 +78,7 @@ where . is a free frame and D is a dirty frame, with U being simply an occupied 
 the reference bits used by the second-chance algorithm.
 I would strongly suggest for debugging that you have a log option that displays every memory access request and
 how it is dealt with, as well as before and after displays of the frame information after the daemon sweeps it.
-# User Processes
+## User Processes
 Each user process generates memory references to one of its locations. This will be done by generating an actual byte
 address, from 0 to the limit of the process memory. In addition, the user process will generate a random number
 to indicate whether the memory reference is a read from memory or write into memory. This information is also
@@ -72,7 +94,7 @@ The statistics of interest are:
 • Throughput
 Make sure that you have signal handling to terminate all processes, if needed. In case of abnormal termination, make
 sure to remove shared memory and semaphores.
-# Deliverables
+## Deliverables
 Handin an electronic copy of all the sources, README, Makefile(s), and results. Create your programs in a directory
 called username.6 where username is your login name on hoare. Once you are done with everything, remove the
 executables and object files, and issue the following commands:
