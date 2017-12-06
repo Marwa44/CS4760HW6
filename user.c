@@ -19,16 +19,26 @@ struct timer
 	unsigned int ns;
 };
 
+struct page
+{
+	unsigned int procID;
+	unsigned int valid;
+	unsigned int dirty;
+	unsigned int readWrite;
+};
+
 int errno;
 int myIndex;
 pid_t pid;
 char errmsg[200];
 struct timer *shmTime;
+struct page *shmPage;
 int *shmChild;
 int *shmTerm;
 sem_t * semDead;
 sem_t * semTerm;
 sem_t * semChild;
+sem_t * semPage;
 
 /* Insert other shmid values here */
 
@@ -67,6 +77,13 @@ void sigIntHandler(int signum)
 		perror(errmsg);	
 	}
 	
+	errno = shmdt(shmPage);
+	if(errno == -1)
+	{
+		snprintf(errmsg, sizeof(errmsg), "USER %d: shmdt(shmPage)", pid);
+		perror(errmsg);	
+	}
+	
 	exit(signum);
 }
 
@@ -76,16 +93,22 @@ int i;
 int terminate = 0;
 struct timer termTime;
 struct timer reqlTime;
+struct page request;
 int timeKey = atoi(argv[1]);
 int childKey = atoi(argv[2]);
 int index = atoi(argv[3]);
 myIndex = index;
 int termKey = atoi(argv[4]);
+int pageKey = atoi(argv[5]);
 key_t keyTime = 8675;
 key_t keyChild = 5309;
 key_t keyTerm = 1138;
+key_t keyPage = 8311;
 signal(SIGINT, sigIntHandler);
 pid = getpid();
+int usedPages = 0;
+int numRequests = 0;
+int nextTerm;
 
 /* Seed random number generator */
 srand(pid * time(NULL));
@@ -121,6 +144,15 @@ if ((void *)shmTerm == (void *)-1)
     exit(1);
 }
 
+/* Point shmPage to shared memory */
+shmPage = shmat(pageKey, NULL, 0);
+if ((void *)shmPage == (void *)-1)
+{
+	snprintf(errmsg, sizeof(errmsg), "USER: shmat(shmidPage)");
+	perror(errmsg);
+    exit(1);
+}
+
 /********************END ATTACHMENT********************/
 
 /********************SEMAPHORE CREATION********************/
@@ -145,46 +177,42 @@ if(semTerm == SEM_FAILED) {
 	perror(errmsg);
     exit(1);
 }
+
+semPage=sem_open("semPage", 1);
+if(semPage == SEM_FAILED) {
+	snprintf(errmsg, sizeof(errmsg), "USER %d: sem_open(semPage)...", pid);
+	perror(errmsg);
+    exit(1);
+}
 /********************END SEMAPHORE CREATION********************/
 
 /* Calculate First Request/Release Time */
-reqlTime.ns = shmTime->ns + rand()%(BOUND);
+/* reqlTime.ns = shmTime->ns + rand()%(BOUND);
 reqlTime.seconds = shmTime->seconds;
 if (reqlTime.ns > 1000000000)
 {
 	reqlTime.ns -= 1000000000;
 	reqlTime.seconds += 1;
-}
+} */
+
+request.procID = myIndex;
 
 while(!terminate)
 {
-	if(rand()%100 <= THRESHOLD)
-	{
-		terminate = 1;
-	}
-	/* else
-	{
-		snprintf(errmsg, sizeof(errmsg), "USER %d: Slave process continuing!", pid);
-		perror(errmsg);
-	} */
-	
-	/* Calculate Termination Time */
-	termTime.ns = shmTime->ns + rand()%250000000;
-	termTime.seconds = shmTime->seconds;
-	if (termTime.ns > 1000000000)
-	{
-		termTime.ns -= 1000000000;
-		termTime.seconds += 1;
-	}
-	
-	/* Wait for the system clock to pass the time */
-	while(termTime.seconds > shmTime->seconds);
-	while(termTime.ns > shmTime->ns);
-	
+	request.readWrite = (rand()%2)+1;
+	/* Write Request == 1 */
+		/* Notify oss of request then wait until granted */
+		/* Granted requests refresh valid bit and change shmPage[myIndex] values (done by oss) */
+
+	/* Read Request == 2 */
+		/* Notify oss of request then wait until granted */
+		/* Granted requests refresh the valid bit */
+		
+	/* Increment Request Count */
+	/* Test if Request count is large enough to terminate */
+		/* If so, set terminate == 1 */	
 }
-/* snprintf(errmsg, sizeof(errmsg), "USER %d: Slave process sleeping!", pid);
-perror(errmsg);
-sleep(1); */
+
 /* signal the release the process from the running processes */
 sem_wait(semTerm);
 shmTerm[index] = 1;
@@ -212,6 +240,13 @@ errno = shmdt(shmTerm);
 if(errno == -1)
 {
 	snprintf(errmsg, sizeof(errmsg), "USER: shmdt(shmTerm)");
+	perror(errmsg);	
+}
+
+errno = shmdt(shmPage);
+if(errno == -1)
+{
+	snprintf(errmsg, sizeof(errmsg), "USER: shmdt(shmPage)");
 	perror(errmsg);	
 }
 
