@@ -10,7 +10,7 @@
 #include <sys/shm.h>
 #include <semaphore.h>
 #include <fcntl.h>
-#define DDA 100000
+#define MAXPAGES 256
 #define MAXSLAVES 18
 #define SYSSLAVES 12
 
@@ -20,21 +20,29 @@ struct timer
 	unsigned int ns;
 };
 
+struct page
+{
+	unsigned int procID;
+	unsigned int valid;
+	unsigned int dirty;
+	unsigned int readWrite;
+};
+
 int errno;
 char errmsg[200];
 FILE *fp;
 int shmidTime;
 int shmidChild;
 int shmidTerm;
+int shmidPage;
 struct timer *shmTime;
+struct page *shmPage;
 int *shmChild;
 int *shmTerm;
 sem_t * semDead;
 sem_t * semTerm;
 sem_t * semChild;
-int lockProc[18] = {0};
-int logCount = 0;
-int totLocked = 0;
+sem_t * semPage;
 /* Insert other shmid values here */
 
 
@@ -87,6 +95,20 @@ void sigIntHandler(int signum)
 		perror(errmsg);	
 	}
 	
+	errno = shmdt(shmPage);
+	if(errno == -1)
+	{
+		snprintf(errmsg, sizeof(errmsg), "OSS: shmdt(shmPage)");
+		perror(errmsg);	
+	}
+	
+	errno = shmctl(shmidPage, IPC_RMID, NULL);
+	if(errno == -1)
+	{
+		snprintf(errmsg, sizeof(errmsg), "OSS: shmctl(shmidPage)");
+		perror(errmsg);	
+	}
+	
 	/* Close Semaphore */
 	sem_unlink("semDead");   
     sem_close(semDead);
@@ -94,6 +116,8 @@ void sigIntHandler(int signum)
 	sem_close(semTerm);
 	sem_unlink("semChild");
 	sem_close(semChild);
+	sem_unlink("semPage");
+	sem_close(semPage);
 	/* Close Log File */
 	fclose(fp);
 	/* Exit program */
@@ -118,13 +142,13 @@ char timeArg[33];
 char childArg[33];
 char indexArg[33];
 char termArg[33];
-char resArg[33];
+char pageArg[33];
 char buf[200];
 pid_t pid = getpid();
 key_t keyTime = 8675;
 key_t keyChild = 5309;
 key_t keyTerm = 1138;
-key_t keyRes = 8311;
+key_t keyPage = 8311;
 char *fileName = "./msglog.out";
 int verbose = 0;
 signal(SIGINT, sigIntHandler);
@@ -134,13 +158,7 @@ struct timer nextProc = {0};
 int numShared = 0;
 int cycles = 0;
 int pKill = -1; 
-int deadlocked = 0;
-int deadCount = 0;
-int deadKills = 0;
-int normTerm = 0;
-int requests = 0;
-int DDARuns = 0;
-float deadTermPercent = 0;
+int usedPages = 0;
 
 /* Seed RNG */
 srand(pid * time(NULL));
@@ -231,7 +249,7 @@ if(tParam != NULL)
 
 /********************MEMORY ALLOCATION********************/
 /* Create shared memory segment for a struct timer */
-shmidTime = shmget(keyTime, sizeof(struct timer), IPC_CREAT | 0666);
+shmidTime = shmget(keyTime, sizeof(struct timer), IPC_CREAT | 0600);
 if (shmidTime < 0)
 {
 	snprintf(errmsg, sizeof(errmsg), "OSS: shmget(keyTime...)");
@@ -249,7 +267,7 @@ if ((void *)shmTime == (void *)-1)
 }
 
 /* Create shared memory segment for a child array */
-shmidChild = shmget(keyChild, sizeof(int)*18, IPC_CREAT | 0666);
+shmidChild = shmget(keyChild, sizeof(int)*18, IPC_CREAT | 0600);
 if (shmidChild < 0)
 {
 	snprintf(errmsg, sizeof(errmsg), "OSS: shmget(keyChild...)");
@@ -267,7 +285,7 @@ if ((void *)shmChild == (void *)-1)
 }
 
 /* Create shared memory segment for a child termination status */
-shmidTerm = shmget(keyTerm, sizeof(int)*19, IPC_CREAT | 0666);
+shmidTerm = shmget(keyTerm, sizeof(int)*19, IPC_CREAT | 0600);
 if (shmidTerm < 0)
 {
 	snprintf(errmsg, sizeof(errmsg), "OSS: shmget(keyTerm...)");
@@ -283,6 +301,24 @@ if ((void *)shmTerm == (void *)-1)
 	perror(errmsg);
     exit(1);
 }
+
+/* Create shared memory segment for a Page Table */
+shmidPage = shmget(keyPage, sizeof(struct page)*256, IPC_CREAT | 0600);
+if (shmidPage < 0)
+{
+	snprintf(errmsg, sizeof(errmsg), "OSS: shmget(keyPage...)");
+	perror(errmsg);
+	exit(1);
+}
+
+/* Point shmPage to shared memory */
+shmPage = shmat(shmidPage, NULL, 0);
+if ((void *)shmPage == (void *)-1)
+{
+	snprintf(errmsg, sizeof(errmsg), "OSS: shmat(shmidPage)");
+	perror(errmsg);
+    exit(1);
+}
 /********************END ALLOCATION********************/
 
 /********************INITIALIZATION********************/
@@ -290,6 +326,7 @@ if ((void *)shmTerm == (void *)-1)
 sprintf(timeArg, "%d", shmidTime);
 sprintf(childArg, "%d", shmidChild);
 sprintf(termArg, "%d", shmidTerm);
+sprintf(pageArg, "%d", shmidPage);
 
 /* Set the time to 00.00 */
 shmTime->seconds = 0;
@@ -321,6 +358,12 @@ if(semTerm == SEM_FAILED) {
 semChild=sem_open("semChild", O_CREAT | O_EXCL, 0644, 1);
 if(semChild == SEM_FAILED) {
 	snprintf(errmsg, sizeof(errmsg), "OSS: sem_open(semChild)...");
+	perror(errmsg);
+	exit(1);
+}    
+semPage=sem_open("semPage", O_CREAT | O_EXCL, 0644, 1);
+if(semChild == SEM_FAILED) {
+	snprintf(errmsg, sizeof(errmsg), "OSS: sem_open(semPage)...");
 	perror(errmsg);
 	exit(1);
 }    
@@ -370,10 +413,29 @@ do
 			{
 				pid = getpid();
 				shmChild[i] = pid;
-				execl("./user", "user", timeArg, childArg, indexArg, termArg, (char*)0);
+				execl("./user", "user", timeArg, childArg, indexArg, termArg, pageArg, (char*)0);
 			}
 		}
 	}
+	
+	/* Check for memory requests */
+		/* Iterate through child processes and compare requests to the page table */
+		/* if the request can be granted, do so */
+			/* post to the child's semaphore */
+			/* increment timer by 10ns */
+			/* log request information */
+		/* if the request is denied due to a page fault*/
+			/* suspend the process */
+			/* increment the timer by 15ms */
+			/* log the page fault */
+	
+	/* Check Page Table Capacity */
+		/* if 25 or fewer pages remain unoccupied, run the daemon */
+			/* Daemon */
+				/* Using a pointer that retains its position, cycle through pages 0-255, marking valid == 1 */
+				/* bits to 0, and stopping on the first valid == 0 bit page. */
+				/* Remove the page from the table */
+				/* If the pointer reaches page 255, loop around to page 0 (circular array - clock algorithm) */
 	
 	/* Check for terminating children */
 	sem_wait(semTerm);
@@ -382,10 +444,8 @@ do
 		
 		if(shmTerm[i] == 1)
 		{
-			/* sem_wait(semTerm); */
-			/* snprintf(errmsg, sizeof(errmsg), "OSS: shmTerm %d is terminating!", i);
-			perror(errmsg); */
-			/* wait(shmChild[i]); */
+			/* Release all memory from terminating process */
+			/* Log any terminated processes */
 			shmChild[i] = 0;
 			numSlaves--;
 			shmTerm[i] = 0;
@@ -393,7 +453,7 @@ do
 		
 	}
 	sem_post(semTerm);
-		
+	
 	/* Update the clock */
 	shmTime->ns += (rand()%10000) + 1;
 	if(shmTime->ns >= 1000000000)
@@ -401,9 +461,13 @@ do
 		shmTime->ns -= 1000000000;
 		shmTime->seconds += 1;
 	}
+	
+	/* Check if another second has passed, then print and log a memory map (valid and dirty) */
+	/* for all 256 pages in the table */
+	
 	cycles++;
 	stop = time(NULL);
-}while(stop-start < maxTime && numProc < 100);
+}while(stop-start < maxTime);
 /********************End Main Program Loop********************/
 
 sleep(1);
@@ -467,6 +531,20 @@ if(errno == -1)
 	snprintf(errmsg, sizeof(errmsg), "OSS: shmctl(shmidTerm)");
 	perror(errmsg);	
 }
+
+errno = shmdt(shmPage);
+if(errno == -1)
+{
+	snprintf(errmsg, sizeof(errmsg), "OSS: shmdt(shmPage)");
+	perror(errmsg);	
+}
+
+errno = shmctl(shmidPage, IPC_RMID, NULL);
+if(errno == -1)
+{
+	snprintf(errmsg, sizeof(errmsg), "OSS: shmctl(shmidPage)");
+	perror(errmsg);	
+}
 /********************END DEALLOCATION********************/
 
 /* Close Semaphore */
@@ -476,7 +554,8 @@ sem_unlink("semTerm");
 sem_close(semTerm);
 sem_unlink("semChild");
 sem_close(semChild);
-
+sem_unlink("semPage");
+sem_close(semPage);
 /* Close Log File */
 fclose(fp);
 return 0;
